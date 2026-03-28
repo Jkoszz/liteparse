@@ -31,6 +31,7 @@ The core module contains the main orchestrator class, configuration management, 
 **Design Decisions:**
 - **Engine auto-detection**: If `ocrServerUrl` is provided, uses HTTP OCR; otherwise defaults to Tesseract.js for zero-setup experience
 - **Selective OCR**: Only runs OCR on pages with <100 characters of text OR pages with embedded images
+- **Image hook fallback**: When OCR returns no results (or all results are filtered), the optional `onImage` hook is called, allowing users to plug in external vision models as a fallback
 - **Progress logging to stderr**: Keeps stdout clean for piped output
 - **Graceful cleanup**: Always cleans up temp files and terminates OCR workers
 
@@ -43,6 +44,10 @@ The core module contains the main orchestrator class, configuration management, 
 - `LiteParseConfig` - All configuration options
 - `LiteParseInput` - Accepted input types: `string | Buffer | Uint8Array`
 - `OutputFormat` - 'json' | 'text'
+
+**Hook Types:**
+- `ImageHook` - Callback invoked when OCR produces no text for an image. Return a string to use as fallback text.
+- `ImageHookContext` - Metadata passed to the hook (imageBuffer, pageNum, pageWidth, pageHeight)
 
 **Data Types:**
 - `TextItem` - Individual text element with position, font, rotation

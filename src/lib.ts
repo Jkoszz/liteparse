@@ -27,4 +27,6 @@ export type {
   SearchItemsOptions,
   ScreenshotResult,
   MarkupData,
+  ImageHook,
+  ImageHookContext,
 } from "./core/types.js";

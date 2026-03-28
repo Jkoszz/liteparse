@@ -136,6 +136,17 @@ export interface LiteParseConfig {
    * @defaultValue `undefined`
    */
   password?: string;
+
+  /**
+   * Optional callback invoked when OCR produces no text for a page image.
+   * Return a string to use as the extracted text for that region.
+   *
+   * This is useful for plugging in external vision models (e.g., GPT-4V, Claude)
+   * as a fallback when OCR fails on complex images.
+   *
+   * @see {@link ImageHook}
+   */
+  onImage?: ImageHook;
 }
 
 /**
@@ -178,6 +189,38 @@ export interface TextItem {
   /** Confidence score from 0.0 to 1.0. Native PDF text defaults to 1.0, OCR text reflects engine confidence. */
   confidence?: number;
 }
+
+/**
+ * Metadata passed to the {@link ImageHook} callback when an image is encountered.
+ */
+export interface ImageHookContext {
+  /** Raw image bytes (PNG). */
+  imageBuffer: Buffer;
+  /** 1-indexed page number where the image was found. */
+  pageNum: number;
+  /** Page width in PDF points. */
+  pageWidth: number;
+  /** Page height in PDF points. */
+  pageHeight: number;
+}
+
+/**
+ * A callback invoked for each page image where OCR produces no text.
+ *
+ * Return a string to use as the extracted text for that image region.
+ * Return `undefined` or an empty string to leave the region empty.
+ *
+ * @example Using an external vision model as a fallback
+ * ```typescript
+ * const parser = new LiteParse({
+ *   onImage: async ({ imageBuffer, pageNum }) => {
+ *     const text = await myVisionModel.describe(imageBuffer);
+ *     return text;
+ *   },
+ * });
+ * ```
+ */
+export type ImageHook = (context: ImageHookContext) => Promise<string | undefined> | string | undefined;
 
 /**
  * Markup annotation data associated with a text item.

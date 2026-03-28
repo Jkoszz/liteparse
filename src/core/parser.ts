@@ -342,6 +342,34 @@ export class LiteParse {
         correctRotation: true,
       });
 
+      // If OCR returned no results and onImage hook is set, call it
+      if (ocrResults.length === 0 && this.config.onImage) {
+        log(`  No OCR results for page ${page.pageNum}, calling onImage hook...`);
+        const hookResult = await this.config.onImage({
+          imageBuffer,
+          pageNum: page.pageNum,
+          pageWidth: page.width,
+          pageHeight: page.height,
+        });
+
+        if (hookResult && hookResult.length > 0) {
+          // Add hook result as a single text item covering the page
+          page.textItems.push({
+            str: hookResult,
+            x: 0,
+            y: 0,
+            width: page.width,
+            height: page.height,
+            w: page.width,
+            h: page.height,
+            fontName: "OCR",
+            confidence: 1.0,
+          });
+          log(`  onImage hook returned text for page ${page.pageNum}`);
+        }
+        return;
+      }
+
       // Convert OCR results to text items and add to page
       if (ocrResults.length > 0) {
         // Scale factor to convert from OCR pixels to PDF points
@@ -427,8 +455,34 @@ export class LiteParse {
           })
           .filter((item) => item.str.length > 0); // Skip items that became empty after cleaning
 
-        // Add OCR text items directly to page textItems
-        page.textItems.push(...ocrTextItems);
+        // If all OCR results were filtered out and onImage hook is set, call it
+        if (ocrTextItems.length === 0 && this.config.onImage) {
+          log(`  OCR results all filtered for page ${page.pageNum}, calling onImage hook...`);
+          const hookResult = await this.config.onImage({
+            imageBuffer,
+            pageNum: page.pageNum,
+            pageWidth: page.width,
+            pageHeight: page.height,
+          });
+
+          if (hookResult && hookResult.length > 0) {
+            page.textItems.push({
+              str: hookResult,
+              x: 0,
+              y: 0,
+              width: page.width,
+              height: page.height,
+              w: page.width,
+              h: page.height,
+              fontName: "OCR",
+              confidence: 1.0,
+            });
+            log(`  onImage hook returned text for page ${page.pageNum}`);
+          }
+        } else {
+          // Add OCR text items directly to page textItems
+          page.textItems.push(...ocrTextItems);
+        }
         log(`  Found ${ocrTextItems.length} text items from OCR on page ${page.pageNum}`);
       }
     } catch (error) {
