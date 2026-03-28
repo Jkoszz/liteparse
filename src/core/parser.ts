@@ -1,4 +1,5 @@
 import pLimit from "p-limit";
+import sharp from "sharp";
 import {
   LiteParseConfig,
   LiteParseInput,
@@ -7,7 +8,7 @@ import {
   TextItem,
 } from "./types.js";
 import { mergeConfig } from "./config.js";
-import { PdfEngine, PdfDocument, PageData } from "../engines/pdf/interface.js";
+import { PdfEngine, PdfDocument, PageData, Image } from "../engines/pdf/interface.js";
 import { PdfJsEngine } from "../engines/pdf/pdfjs.js";
 import { PdfiumRenderer } from "../engines/pdf/pdfium-renderer.js";
 import { OcrEngine } from "../engines/ocr/interface.js";
@@ -165,8 +166,13 @@ export class LiteParse {
     );
 
     // run BEFORE grid projection
-    if (this.ocrEngine || this.config.onImage) {
+    if (this.ocrEngine) {
       await this.runOCR(doc, pages, log);
+    }
+
+    // Run onImage hook for each embedded image where OCR produced no text
+    if (this.config.onImage) {
+      await this.runImageHooks(doc, pages, log);
     }
 
     // Process pages with complete grid projection (after OCR)
@@ -293,7 +299,7 @@ export class LiteParse {
     pages: PageData[],
     log: (msg: string) => void
   ): Promise<void> {
-    if (!this.ocrEngine && !this.config.onImage) return;
+    if (!this.ocrEngine) return;
 
     log(`Running OCR on pages (concurrency: ${this.config.numWorkers})...`);
 
@@ -310,7 +316,7 @@ export class LiteParse {
     page: PageData,
     log: (msg: string) => void
   ): Promise<void> {
-    if (!this.ocrEngine && !this.config.onImage) return;
+    if (!this.ocrEngine) return;
 
     // Check if page has very little text (indicating need for OCR)
     const textLength = page.textItems.reduce(
@@ -335,69 +341,12 @@ export class LiteParse {
         this.config.password
       );
 
-      // If no OCR engine, skip straight to the onImage hook
-      if (!this.ocrEngine) {
-        if (this.config.onImage) {
-          log(`  No OCR engine, calling onImage hook for page ${page.pageNum}...`);
-          const hookResult = await this.config.onImage({
-            imageBuffer,
-            pageNum: page.pageNum,
-            pageWidth: page.width,
-            pageHeight: page.height,
-          });
-
-          if (hookResult && hookResult.length > 0) {
-            page.textItems.push({
-              str: hookResult,
-              x: 0,
-              y: 0,
-              width: page.width,
-              height: page.height,
-              w: page.width,
-              h: page.height,
-              fontName: "OCR",
-              confidence: 1.0,
-            });
-            log(`  onImage hook returned text for page ${page.pageNum}`);
-          }
-        }
-        return;
-      }
-
       // Run OCR directly on the buffer (no temp file needed)
       log(`  OCR on page ${page.pageNum}...`);
       const ocrResults = await this.ocrEngine.recognize(imageBuffer, {
         language: this.config.ocrLanguage,
         correctRotation: true,
       });
-
-      // If OCR returned no results and onImage hook is set, call it
-      if (ocrResults.length === 0 && this.config.onImage) {
-        log(`  No OCR results for page ${page.pageNum}, calling onImage hook...`);
-        const hookResult = await this.config.onImage({
-          imageBuffer,
-          pageNum: page.pageNum,
-          pageWidth: page.width,
-          pageHeight: page.height,
-        });
-
-        if (hookResult && hookResult.length > 0) {
-          // Add hook result as a single text item covering the page
-          page.textItems.push({
-            str: hookResult,
-            x: 0,
-            y: 0,
-            width: page.width,
-            height: page.height,
-            w: page.width,
-            h: page.height,
-            fontName: "OCR",
-            confidence: 1.0,
-          });
-          log(`  onImage hook returned text for page ${page.pageNum}`);
-        }
-        return;
-      }
 
       // Convert OCR results to text items and add to page
       if (ocrResults.length > 0) {
@@ -484,39 +433,131 @@ export class LiteParse {
           })
           .filter((item) => item.str.length > 0); // Skip items that became empty after cleaning
 
-        // If all OCR results were filtered out and onImage hook is set, call it
-        if (ocrTextItems.length === 0 && this.config.onImage) {
-          log(`  OCR results all filtered for page ${page.pageNum}, calling onImage hook...`);
-          const hookResult = await this.config.onImage({
-            imageBuffer,
-            pageNum: page.pageNum,
-            pageWidth: page.width,
-            pageHeight: page.height,
-          });
-
-          if (hookResult && hookResult.length > 0) {
-            page.textItems.push({
-              str: hookResult,
-              x: 0,
-              y: 0,
-              width: page.width,
-              height: page.height,
-              w: page.width,
-              h: page.height,
-              fontName: "OCR",
-              confidence: 1.0,
-            });
-            log(`  onImage hook returned text for page ${page.pageNum}`);
-          }
-        } else {
-          // Add OCR text items directly to page textItems
-          page.textItems.push(...ocrTextItems);
-        }
+        // Add OCR text items directly to page textItems
+        page.textItems.push(...ocrTextItems);
         log(`  Found ${ocrTextItems.length} text items from OCR on page ${page.pageNum}`);
       }
     } catch (error) {
       log(`  OCR failed for page ${page.pageNum}: ${error}`);
     }
+  }
+
+  /**
+   * Run the onImage hook for each embedded image that has no text coverage.
+   * Checks each image's bounds against existing textItems (native + OCR).
+   * If no text overlaps the image, crops the page render to that image
+   * and calls the hook with the cropped buffer.
+   */
+  private async runImageHooks(
+    doc: PdfDocument,
+    pages: PageData[],
+    log: (msg: string) => void
+  ): Promise<void> {
+    if (!this.config.onImage) return;
+
+    const limit = pLimit(this.config.numWorkers);
+
+    await Promise.all(
+      pages.map((page) => limit(() => this.processPageImageHooks(doc, page, log)))
+    );
+  }
+
+  /**
+   * Process onImage hooks for a single page.
+   * For each embedded image with no overlapping text, crop the page render
+   * to the image bounds and call the hook.
+   */
+  private async processPageImageHooks(
+    doc: PdfDocument,
+    page: PageData,
+    log: (msg: string) => void
+  ): Promise<void> {
+    if (!this.config.onImage || page.images.length === 0) return;
+
+    // Find images that have no text coverage
+    const uncoveredImages = page.images.filter(
+      (img) => !this.imageHasTextCoverage(img, page.textItems)
+    );
+
+    if (uncoveredImages.length === 0) return;
+
+    // Render page once for all images on this page
+    const pageImageBuffer = await this.pdfEngine.renderPageImage(
+      doc,
+      page.pageNum,
+      this.config.dpi,
+      this.config.password
+    );
+
+    // PDF points → pixel scale factor for cropping
+    const pxPerPt = this.config.dpi / 72;
+
+    for (const img of uncoveredImages) {
+      try {
+        // Convert image bounds from PDF points to pixel coordinates
+        const left = Math.max(0, Math.round(img.x * pxPerPt));
+        const top = Math.max(0, Math.round(img.y * pxPerPt));
+        const width = Math.max(1, Math.round(img.width * pxPerPt));
+        const height = Math.max(1, Math.round(img.height * pxPerPt));
+
+        // Crop the page render to this image's region
+        const croppedBuffer = await sharp(pageImageBuffer)
+          .extract({ left, top, width, height })
+          .png()
+          .toBuffer();
+
+        log(`  Calling onImage hook for image at (${img.x}, ${img.y}) on page ${page.pageNum}...`);
+        const hookResult = await this.config.onImage({
+          imageBuffer: croppedBuffer,
+          pageNum: page.pageNum,
+          pageWidth: page.width,
+          pageHeight: page.height,
+          imageX: img.x,
+          imageY: img.y,
+          imageWidth: img.width,
+          imageHeight: img.height,
+        });
+
+        if (hookResult && hookResult.length > 0) {
+          page.textItems.push({
+            str: hookResult,
+            x: img.x,
+            y: img.y,
+            width: img.width,
+            height: img.height,
+            w: img.width,
+            h: img.height,
+            fontName: "OCR",
+            confidence: 1.0,
+          });
+          log(`  onImage hook returned text for image on page ${page.pageNum}`);
+        }
+      } catch (error) {
+        log(`  onImage hook failed for image at (${img.x}, ${img.y}) on page ${page.pageNum}: ${error}`);
+      }
+    }
+  }
+
+  /**
+   * Check whether any existing text items overlap with an image's bounds.
+   * Uses a generous tolerance to avoid false negatives.
+   */
+  private imageHasTextCoverage(img: Image, textItems: TextItem[]): boolean {
+    const tolerance = 5; // PDF points
+    for (const item of textItems) {
+      const itemRight = item.x + (item.width || item.w || 0);
+      const itemBottom = item.y + (item.height || item.h || 0);
+      const imgRight = img.x + img.width;
+      const imgBottom = img.y + img.height;
+
+      const overlapX = item.x < imgRight + tolerance && itemRight > img.x - tolerance;
+      const overlapY = item.y < imgBottom + tolerance && itemBottom > img.y - tolerance;
+
+      if (overlapX && overlapY) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /**

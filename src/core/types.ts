@@ -191,10 +191,11 @@ export interface TextItem {
 }
 
 /**
- * Metadata passed to the {@link ImageHook} callback when an image is encountered.
+ * Metadata passed to the {@link ImageHook} callback when an embedded image is encountered
+ * that has no text coverage from native PDF extraction or OCR.
  */
 export interface ImageHookContext {
-  /** Raw image bytes (PNG). */
+  /** Cropped image bytes (PNG) — just this image, not the full page. */
   imageBuffer: Buffer;
   /** 1-indexed page number where the image was found. */
   pageNum: number;
@@ -202,11 +203,21 @@ export interface ImageHookContext {
   pageWidth: number;
   /** Page height in PDF points. */
   pageHeight: number;
+  /** Image X position on the page, in PDF points. */
+  imageX: number;
+  /** Image Y position on the page, in PDF points. */
+  imageY: number;
+  /** Image width in PDF points. */
+  imageWidth: number;
+  /** Image height in PDF points. */
+  imageHeight: number;
 }
 
 /**
- * A callback invoked for each page image where OCR produces no text.
+ * A callback invoked for each embedded image where neither native PDF text
+ * extraction nor OCR produced any text within the image bounds.
  *
+ * The callback receives a cropped PNG of the individual image (not the full page).
  * Return a string to use as the extracted text for that image region.
  * Return `undefined` or an empty string to leave the region empty.
  *

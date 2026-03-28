@@ -31,7 +31,7 @@ The core module contains the main orchestrator class, configuration management, 
 **Design Decisions:**
 - **Engine auto-detection**: If `ocrServerUrl` is provided, uses HTTP OCR; otherwise defaults to Tesseract.js for zero-setup experience
 - **Selective OCR**: Only runs OCR on pages with <100 characters of text OR pages with embedded images
-- **Image hook fallback**: When OCR returns no results (or all results are filtered), the optional `onImage` hook is called, allowing users to plug in external vision models as a fallback
+- **Per-image hook fallback**: After OCR, each embedded image with no text coverage triggers the optional `onImage` hook with a cropped PNG of that image. This allows plugging in external vision models (e.g., GPT-4V, Claude) as a fallback for charts, diagrams, or other non-text images
 - **Progress logging to stderr**: Keeps stdout clean for piped output
 - **Graceful cleanup**: Always cleans up temp files and terminates OCR workers
 
@@ -46,8 +46,8 @@ The core module contains the main orchestrator class, configuration management, 
 - `OutputFormat` - 'json' | 'text'
 
 **Hook Types:**
-- `ImageHook` - Callback invoked when OCR produces no text for an image. Return a string to use as fallback text.
-- `ImageHookContext` - Metadata passed to the hook (imageBuffer, pageNum, pageWidth, pageHeight)
+- `ImageHook` - Callback invoked per embedded image that has no text coverage. Receives a cropped PNG. Return a string to use as fallback text.
+- `ImageHookContext` - Metadata passed to the hook (cropped imageBuffer, pageNum, page dimensions, image position/dimensions)
 
 **Data Types:**
 - `TextItem` - Individual text element with position, font, rotation
