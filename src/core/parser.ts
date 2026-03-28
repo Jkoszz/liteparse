@@ -165,7 +165,7 @@ export class LiteParse {
     );
 
     // run BEFORE grid projection
-    if (this.ocrEngine) {
+    if (this.ocrEngine || this.config.onImage) {
       await this.runOCR(doc, pages, log);
     }
 
@@ -293,7 +293,7 @@ export class LiteParse {
     pages: PageData[],
     log: (msg: string) => void
   ): Promise<void> {
-    if (!this.ocrEngine) return;
+    if (!this.ocrEngine && !this.config.onImage) return;
 
     log(`Running OCR on pages (concurrency: ${this.config.numWorkers})...`);
 
@@ -310,7 +310,7 @@ export class LiteParse {
     page: PageData,
     log: (msg: string) => void
   ): Promise<void> {
-    if (!this.ocrEngine) return;
+    if (!this.ocrEngine && !this.config.onImage) return;
 
     // Check if page has very little text (indicating need for OCR)
     const textLength = page.textItems.reduce(
@@ -334,6 +334,35 @@ export class LiteParse {
         this.config.dpi,
         this.config.password
       );
+
+      // If no OCR engine, skip straight to the onImage hook
+      if (!this.ocrEngine) {
+        if (this.config.onImage) {
+          log(`  No OCR engine, calling onImage hook for page ${page.pageNum}...`);
+          const hookResult = await this.config.onImage({
+            imageBuffer,
+            pageNum: page.pageNum,
+            pageWidth: page.width,
+            pageHeight: page.height,
+          });
+
+          if (hookResult && hookResult.length > 0) {
+            page.textItems.push({
+              str: hookResult,
+              x: 0,
+              y: 0,
+              width: page.width,
+              height: page.height,
+              w: page.width,
+              h: page.height,
+              fontName: "OCR",
+              confidence: 1.0,
+            });
+            log(`  onImage hook returned text for page ${page.pageNum}`);
+          }
+        }
+        return;
+      }
 
       // Run OCR directly on the buffer (no temp file needed)
       log(`  OCR on page ${page.pageNum}...`);
